@@ -217,15 +217,19 @@ S(r, θ, ϕ) = 1/2 * real(
 
 #=====================================================================#
 # === 散乱強度（S）を評価 ===
+# juliaの起動時に julia -t auto など、マルチスレッドを有効化して起動する
+p = Progress(Ny, "Computing in parallel...")　# ProgressMeterの開始
 result_arr = zeros(Float64, Ny, Nx)
-@showprogress for j in 1:Ny
+Threads.@threads for j in 1:Ny
     for i in 1:Nx
         r = sqrt(x[i]^2 + y[j]^2 + z^2)       # すでに[m]
         θ = acos(z / r)                       # z, rともに[m] ⇒ OK
         ϕ = (x[i] == 0 && y[j] == 0) ? 0.0 : atan(y[j], x[i])                  # atan(y, x) で極座標φ
         result_arr[j, i] = real(S(r, θ, ϕ))   # S: Eq. 40
     end
+    next!(p)
 end
+finish!(p) # ProgressMeterの終了
 
 # === 出力先の設定 ===
 output_dir = "../data"  # ここで自由にフォルダ名を指定
