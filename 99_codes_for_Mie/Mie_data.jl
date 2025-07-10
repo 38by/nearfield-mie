@@ -2,6 +2,9 @@ using SpecialFunctions, LegendrePolynomials, ProgressMeter
 using ForwardDiff
 # using Unitful
 using Plots
+using Statistics          # Added for the mean() function
+using Interpolations      # Added for linear_interpolation()
+using Images, FileIO      # Added for image processing and saving (Gray, save)
 
 
 # === 設定値 ===
@@ -43,16 +46,42 @@ Ny = length(y)
 ξdiff2(n, x) = ψdiff2(n, x) + im * χdiff2(n, x)
 
 # Eq. 12 and 13
-function a(n, α, β, m)
-    num = ψ(n,α)*ψdiff(n,β) - m*ψdiff(n,α)*ψ(n,β)
-    den = ξ(n,α)*ψdiff(n,β) - m*ξdiff(n,α)*ψ(n,β)
+# function a(n, α, β, m)
+#     num = ψ(n,α)*ψdiff(n,β) - m*ψdiff(n,α)*ψ(n,β)
+#     den = ξ(n,α)*ψdiff(n,β) - m*ξdiff(n,α)*ψ(n,β)
+#     return num / den
+# end
+# function b(n, α, β, m)
+#     num = m * ψ(n,α) * ψdiff(n,β) - ψdiff(n,α) * ψ(n,β)
+#     den = m * ξ(n,α) * ψdiff(n,β) - ξdiff(n,α) * ψ(n,β)
+#     return num / den
+# end
+
+# Bohren & Huffman (1983)　p.127 Eq. (4.88)
+function a(n, α, m, D_n_β)
+    temp = (D_n_β[n] / m + n / α)
+    num = temp * ψ(n, α) - ψ(n - 1, α)
+    den = temp * ξ(n, α) - ξ(n - 1, α)
     return num / den
 end
-function b(n, α, β, m)
-    num = m * ψ(n,α) * ψdiff(n,β) - ψdiff(n,α) * ψ(n,β)
-    den = m * ξ(n,α) * ψdiff(n,β) - ξdiff(n,α) * ψ(n,β)
+function b(n, α, m, D_n_β)
+    temp = (m * D_n_β[n] + n / α)
+    num = temp * ψ(n, α) - ψ(n - 1, α)
+    den = temp * ξ(n, α) - ξ(n - 1, α)
     return num / den
 end
+
+function calculate_D(ρ::Complex, n_max::Int) #対数微分 D_n(ρ)を下方漸化式で計算。
+    D =zeros(ComplexF64, n_max + 15) # 実際にはn_maxより少し大きい次数から計算を始めるため、配列も大きめに取る。
+    for n in (n_max + 14) : -1 : 1 # 漸化式は次数を下げながら計算する。
+        D[n] = n / ρ - 1.0 / (D[n + 1] + n / ρ) # Bohren & Huffman (1983)　p.127 Eq. (4.89)
+    end
+    return D[1:n_max]
+end
+
+D_n_β_value = calculate_D(β, N)  # 対数微分 D_n(β) を計算
+a_n_coeffs = [a(n, α, m, D_n_β_value) for n in 1:N]  # a(n, α, β, m) の値を事前計算
+b_n_coeffs = [b(n, α, m, D_n_β_value) for n in 1:N]  # b(n, α, β, m) の値を事前計算
 
 # Eq. 20, 21
 # pifunc(n, θ) = Plm(cos(θ), n, 1) / sin(θ)
@@ -75,7 +104,7 @@ H0 = -k / (ω * μ) * E0   # これで十分
 # Eq. 33
 Etr(r, θ, ϕ) = E0 * cos(ϕ) * (
     sin(θ) * exp(-im * k * r * cos(θ)) +
-    sum(im^(n+1) * (-1)^n * (2n+1)/(n*(n+1)) * a(n, α, β, m) *
+    sum(im^(n+1) * (-1)^n * (2n+1)/(n*(n+1)) * a_n_coeffs[n] *
         (ξdiff2(n, k*r) + ξ(n, k*r)) * Plm(cos(θ), n, 1) for n in 1:N)
 )
 
@@ -84,7 +113,7 @@ Etθ(r, θ, ϕ) = E0 * cos(ϕ) / (k * r) * (
     k * r * cos(θ) * exp(-im * k * r * cos(θ)) +
     sum(
         im^(n+1) * (-1)^n * (2n + 1) / (n * (n + 1)) *
-        (a(n, α, β, m) * ξdiff(n, k*r) * τ(n, θ) - im * b(n, α, β, m) * ξ(n, k*r) * pifunc(n, θ))
+        (a_n_coeffs[n] * ξdiff(n, k*r) * τ(n, θ) - im * b_n_coeffs[n] * ξ(n, k*r) * pifunc(n, θ))
         for n in 1:N
     )
 )
@@ -94,7 +123,7 @@ Etϕ(r, θ, ϕ) = -E0 * sin(ϕ) / (k * r) * (
     k * r * exp(-im * k * r * cos(θ)) +
     sum(
         im^(n + 1) * (-1)^n * (2n + 1) / (n * (n + 1)) *
-        (a(n, α, β, m) * ξdiff(n, k * r) * pifunc(n, θ) - im * b(n, α, β, m) * ξ(n, k * r) * τ(n, θ))
+        (a_n_coeffs[n] * ξdiff(n, k * r) * pifunc(n, θ) - im * b_n_coeffs[n] * ξ(n, k * r) * τ(n, θ))
         for n in 1:N
     )
 )
@@ -104,7 +133,7 @@ Htr(r, θ, ϕ) = E0 * sqrt(ϵ/μ) * sin(ϕ) * (
     sin(θ) * exp(-im * k * r * cos(θ)) +
     sum(
         im^(n+1) * (-1)^n * (2n+1)/(n*(n+1)) *
-        b(n, α, β, m) * (ξdiff2(n,k*r)+ξ(n,k*r)) * Plm(cos(θ), n, 1)
+        b_n_coeffs[n] * (ξdiff2(n,k*r)+ξ(n,k*r)) * Plm(cos(θ), n, 1)
         for n in 1:N
     )
 )
@@ -114,7 +143,7 @@ Htθ(r, θ, ϕ) = E0/(k*r) * sqrt(ϵ/μ) * sin(ϕ) * (
     k * r * cos(θ) * exp(-im * k * r * cos(θ)) +
     sum(
         im^(n+1) * (-1)^n * (2n+1)/(n*(n+1)) *
-        (-im*a(n, α, β, m) * ξ(n,k*r) * pifunc(n, θ) + b(n, α, β, m) * ξdiff(n,k*r) * τ(n, θ))
+        (-im*a_n_coeffs[n] * ξ(n,k*r) * pifunc(n, θ) + b_n_coeffs[n] * ξdiff(n,k*r) * τ(n, θ))
         for n in 1:N
     )
 )
@@ -124,7 +153,7 @@ Htϕ(r, θ, ϕ) = E0/(k*r) * sqrt(ϵ/μ) * cos(ϕ) * (
     k * r * exp(-im * k * r * cos(θ)) +
     sum(
         im^(n+1) * (-1)^n * (2n+1)/(n*(n+1)) *
-        (-im*a(n, α, β, m) * ξ(n,k*r) * τ(n, θ) + b(n, α, β, m) * ξdiff(n,k*r) * pifunc(n, θ))
+        (-im*a_n_coeffs[n] * ξ(n,k*r) * τ(n, θ) + b_n_coeffs[n] * ξdiff(n,k*r) * pifunc(n, θ))
         for n in 1:N
     )
 )
@@ -233,7 +262,7 @@ end
 finish!(p)
 
 # === 出力先の設定 ===
-output_dir = "../data"  # ここで自由にフォルダ名を指定
+output_dir = "../00_Mie/data"  # ここで自由にフォルダ名を指定
 mkpath(output_dir)  # フォルダがなければ自動作成
 
 # 出力ファイルパス
@@ -253,20 +282,19 @@ end
 
 
 
-# === プロット ===
-using Plots
-contour(
-    x .* 1e6, y .* 1e6, result_arr,         # [m] → [µm]
-    xlabel = "x [µm]",
-    ylabel = "y [µm]",
-    title = "Isophote behind 20-µm Transparent Particle (Fig.3)",
-    fill = true,
-    levels = 60,                         # 等高線を細かく
-    clim = (0.0, 0.002),                 # 明るい部分の saturate を防ぐ
-    aspect_ratio = :equal,         # 縦横1:1 (同義)
-    xlims = (0, 20),               # 明示的に範囲指定
-    ylims = (0, 20),
-    colorbar = true,
-    colorbar_title = "S [W/m²]"
-)
-savefig("Mie_data.png")
+# # === プロット ===
+# using Plots
+# contour(
+#     x .* 1e6, y .* 1e6, result_arr,         # [m] → [µm]
+#     xlabel = "x [µm]",
+#     ylabel = "y [µm]",
+#     title = "Isophote behind 20-µm Transparent Particle (Fig.3)",
+#     fill = true,
+#     levels = 60,                         # 等高線を細かく
+#     clim = (0.0, 0.002),                 # 明るい部分の saturate を防ぐ
+#     aspect_ratio = :equal,         # 縦横1:1 (同義)
+#     xlims = (0, 20),               # 明示的に範囲指定
+#     ylims = (0, 20),
+#     colorbar = true,
+#     colorbar_title = "S [W/m²]"
+# )
